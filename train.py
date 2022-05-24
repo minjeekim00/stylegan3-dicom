@@ -22,7 +22,14 @@ from metrics import metric_main
 from torch_utils import training_stats
 from torch_utils import custom_ops
 
-#----------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+import sys
+sys.path.insert(0, '../loader')
+from dcm_datasets import _data_transforms_dicom_xray_np
+from dcm_datasets import TempTransform
+
+# ----------------------------------------------------------------------------
 
 def subprocess_fn(rank, c, temp_dir):
     dnnlib.util.Logger(file_name=os.path.join(c.run_dir, 'log.txt'), file_mode='a', should_flush=True)
@@ -46,7 +53,14 @@ def subprocess_fn(rank, c, temp_dir):
     # Execute training loop.
     training_loop.training_loop(rank=rank, **c)
 
-#----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+
+## To detour the JSON error
+def json_default(value):
+    if isinstance(value, TempTransform):
+        return "TempTransform"
+    raise TypeError('not JSON serializable')
+
 
 def launch_training(c, desc, outdir, dry_run):
     dnnlib.util.Logger(should_flush=True)
@@ -64,7 +78,8 @@ def launch_training(c, desc, outdir, dry_run):
     # Print options.
     print()
     print('Training options:')
-    print(json.dumps(c, indent=2))
+
+    print(json.dumps(c, indent=2, default=json_default))
     print()
     print(f'Output directory:    {c.run_dir}')
     print(f'Number of GPUs:      {c.num_gpus}')
@@ -86,7 +101,7 @@ def launch_training(c, desc, outdir, dry_run):
     print('Creating output directory...')
     os.makedirs(c.run_dir)
     with open(os.path.join(c.run_dir, 'training_options.json'), 'wt') as f:
-        json.dump(c, f, indent=2)
+        json.dump(c, f, indent=2, default=json_default)
 
     # Launch processes.
     print('Launching processes...')
@@ -97,8 +112,9 @@ def launch_training(c, desc, outdir, dry_run):
         else:
             torch.multiprocessing.spawn(fn=subprocess_fn, args=(c, temp_dir), nprocs=c.num_gpus)
 
-#----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
 
+'''
 def init_dataset_kwargs(data):
     try:
         dataset_kwargs = dnnlib.EasyDict(class_name='training.dataset.ImageFolderDataset', path=data, use_labels=True, max_size=None, xflip=False)
@@ -109,8 +125,41 @@ def init_dataset_kwargs(data):
         return dataset_kwargs, dataset_obj.name
     except IOError as err:
         raise click.ClickException(f'--data: {err}')
+'''
+# ----------------------------------------------------------------------------
+def init_dataset_kwargs(opts):
+    """
+        Original code: "resolution" is determined by loading raw image.
+        Revised code: "resolution" is an augment for image pre-processing.
+    """
+    try:
+        dataset_kwargs = dnnlib.EasyDict(class_name='dcm_datasets.DCMFolderDataset', 
+                                        path=opts.data, 
+                                        use_labels=True, 
+                                        max_size=None, 
+                                        xflip=False)
 
-#----------------------------------------------------------------------------
+        ## Explicit resolution, num of output channels and data type. (before construction)
+        ## TODO: Resolution as argument?
+
+        if opts.modality == 'xray':
+            dataset_kwargs.resolution = 1024
+        else: #headct, abdomenct
+            dataset_kwargs.resolution = 512
+        dataset_kwargs.transform = _data_transforms_dicom_xray_np(dataset_kwargs.resolution, opts.o_dtype)
+
+        dataset_kwargs.output_channels = opts.o_channels
+        dataset_kwargs.output_dtype = opts.o_dtype
+
+        # Construction
+        dataset_obj = dnnlib.util.construct_class_by_name(**dataset_kwargs) # Subclass of training.dataset.Dataset.
+        dataset_kwargs.use_labels = dataset_obj.has_labels # Be explicit about labels.
+        dataset_kwargs.max_size = len(dataset_obj) # Be explicit about dataset size.
+        return dataset_kwargs, dataset_obj.name
+    except IOError as err:
+        raise click.ClickException(f'--data: {err}')
+
+# ----------------------------------------------------------------------------
 
 def parse_comma_separated_list(s):
     if isinstance(s, list):
@@ -119,7 +168,7 @@ def parse_comma_separated_list(s):
         return []
     return s.split(',')
 
-#----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
 
 @click.command()
 
@@ -130,6 +179,12 @@ def parse_comma_separated_list(s):
 @click.option('--gpus',         help='Number of GPUs to use', metavar='INT',                    type=click.IntRange(min=1), required=True)
 @click.option('--batch',        help='Total batch size', metavar='INT',                         type=click.IntRange(min=1), required=True)
 @click.option('--gamma',        help='R1 regularization weight', metavar='FLOAT',               type=click.FloatRange(min=0), required=True)
+
+## Custom options
+@click.option('--modality',     help='Medical image modality',                                  type=click.Choice(['xray', 'headct', 'abdomenct']), required=True)
+@click.option('--windowing',    help='Windowing setting by disease',                            type=click.Choice(['normal', 'pneumonia', 'hemorrhage', 'hemoperitoneum']), required=True)
+@click.option('--o_dtype',      help='Output data type to be generated',                        type=click.Choice(['uint8', 'int16']), required=True)
+@click.option('--o_channels',   help='Output image channels to be generated',                   type=int, default=1, required=True)
 
 # Optional features.
 @click.option('--cond',         help='Train conditional model', metavar='BOOL',                 type=bool, default=False, show_default=True)
@@ -182,8 +237,16 @@ def main(**kwargs):
     # Train StyleGAN2 for FFHQ at 1024x1024 resolution using 8 GPUs.
     python train.py --outdir=~/training-runs --cfg=stylegan2 --data=~/datasets/ffhq-1024x1024.zip \\
         --gpus=8 --batch=32 --gamma=10 --mirror=1 --aug=noaug
-    """
 
+
+    \b
+    # Train DICOM at 512x512 resolution with 8-bit range and 1 channel using 4 GPUS.
+    python3 train.py --outdir=./training-runs-8bit-1ch --cfg=stylegan3-r \\ 
+        --data=/mnt/promedius_dataset/BrainCT/RSNA/rsna-intracranial-hemorrhage-detection/1_ImageSynthesis_full/stage_2_train_dz_dcm \\ 
+        --modality=abdomenct --windowing=hemoperitoneum --o_dtype=uint8 --o_channels=1 \\ 
+        --gpus=4 --batch=80 --gamma=8.2 --mirror=1 --batch-gpu=20 --aug=noaug --metrics=None --kimg 20000
+    """
+   
     # Initialize config.
     opts = dnnlib.EasyDict(kwargs) # Command line arguments.
     c = dnnlib.EasyDict() # Main config dict.
@@ -195,11 +258,18 @@ def main(**kwargs):
     c.data_loader_kwargs = dnnlib.EasyDict(pin_memory=True, prefetch_factor=2)
 
     # Training set.
-    c.training_set_kwargs, dataset_name = init_dataset_kwargs(data=opts.data)
+    c.training_set_kwargs, dataset_name = init_dataset_kwargs(opts=opts)
     if opts.cond and not c.training_set_kwargs.use_labels:
         raise click.ClickException('--cond=True requires labels specified in dataset.json')
     c.training_set_kwargs.use_labels = opts.cond
     c.training_set_kwargs.xflip = opts.mirror
+
+    ## Custom options
+    c.training_set_kwargs.modality = opts.modality
+    c.training_set_kwargs.windowing = opts.windowing
+    c.training_set_kwargs.output_dtype = opts.o_dtype
+    assert opts.o_channels in [1, 3]
+    c.training_set_kwargs.output_channels = opts.o_channels
 
     # Hyperparameters & settings.
     c.num_gpus = opts.gpus
@@ -252,7 +322,8 @@ def main(**kwargs):
 
     # Augmentation.
     if opts.aug != 'noaug':
-        c.augment_kwargs = dnnlib.EasyDict(class_name='training.augment.AugmentPipe', xflip=1, rotate90=1, xint=1, scale=1, rotate=1, aniso=1, xfrac=1, brightness=1, contrast=1, lumaflip=1, hue=1, saturation=1)
+        #c.augment_kwargs = dnnlib.EasyDict(class_name='training.augment.AugmentPipe', xflip=1, rotate90=1, xint=1, scale=1, rotate=1, aniso=1, xfrac=1, brightness=1, contrast=1, lumaflip=1, hue=1, saturation=1)
+        c.augment_kwargs = dnnlib.EasyDict(class_name='training.augment.AugmentPipe', xflip=0, rotate90=0, xint=1, scale=1, rotate=0, aniso=1, xfrac=1, brightness=1, contrast=1, lumaflip=1, hue=0, saturation=0)
         if opts.aug == 'ada':
             c.ada_target = opts.target
         if opts.aug == 'fixed':
@@ -280,9 +351,9 @@ def main(**kwargs):
     # Launch.
     launch_training(c=c, desc=desc, outdir=opts.outdir, dry_run=opts.dry_run)
 
-#----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
 
 if __name__ == "__main__":
     main() # pylint: disable=no-value-for-parameter
 
-#----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
