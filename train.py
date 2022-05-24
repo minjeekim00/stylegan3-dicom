@@ -25,9 +25,8 @@ from torch_utils import custom_ops
 
 # ---------------------------------------------------------------------------
 import sys
-sys.path.insert(0, '../loader')
-from dcm_datasets import _data_transforms_dicom_xray_np
-from dcm_datasets import TempTransform
+from loader.dcm_datasets import _data_transforms_dicom_xray_np
+from loader.dcm_datasets import TempTransform
 
 # ----------------------------------------------------------------------------
 
