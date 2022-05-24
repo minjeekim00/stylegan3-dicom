@@ -142,13 +142,15 @@ def training_loop(
         print()
         print('Num images: ', len(training_set))
         print('Image shape:', training_set.image_shape)
+        print('Output shape:', [training_set._o_channels] + training_set.image_shape[1:])
         print('Label shape:', training_set.label_shape)
         print()
 
     # Construct networks.
     if rank == 0:
         print('Constructing networks...')
-    common_kwargs = dict(c_dim=training_set.label_dim, img_resolution=training_set.resolution, img_channels=training_set.num_channels)
+    #common_kwargs = dict(c_dim=training_set.label_dim, img_resolution=training_set.resolution, img_channels=training_set.num_channels)
+    common_kwargs = dict(c_dim=training_set.label_dim, img_resolution=training_set.resolution, img_channels=training_set._o_channels)
     G = dnnlib.util.construct_class_by_name(**G_kwargs, **common_kwargs).train().requires_grad_(False).to(device) # subclass of torch.nn.Module
     D = dnnlib.util.construct_class_by_name(**D_kwargs, **common_kwargs).train().requires_grad_(False).to(device) # subclass of torch.nn.Module
     G_ema = copy.deepcopy(G).eval()
@@ -218,7 +220,12 @@ def training_loop(
     if rank == 0:
         print('Exporting sample images...')
         grid_size, images, labels = setup_snapshot_image_grid(training_set=training_set)
-        save_image_grid(images, os.path.join(run_dir, 'reals.png'), drange=[0,255], grid_size=grid_size)
+        if training_set._o_dtype == 'uint8':
+            save_image_grid(images, os.path.join(run_dir, 'reals.png'), drange=[0,255], grid_size=grid_size)
+        elif training_set._o_dtype == 'int16':
+            save_image_grid(images, os.path.join(run_dir, 'reals.png'), drange=[-1024,3071], grid_size=grid_size)
+        #elif training_set._ot_dtype == 'uint16':
+        #    save_image_grid(images, os.path.join(run_dir, 'reals.png'), drange=[0,65535], grid_size=grid_size)
         grid_z = torch.randn([labels.shape[0], G.z_dim], device=device).split(batch_gpu)
         grid_c = torch.from_numpy(labels).to(device).split(batch_gpu)
         images = torch.cat([G_ema(z=z, c=c, noise_mode='const').cpu() for z, c in zip(grid_z, grid_c)]).numpy()
@@ -256,7 +263,14 @@ def training_loop(
         # Fetch training data.
         with torch.autograd.profiler.record_function('data_fetch'):
             phase_real_img, phase_real_c = next(training_set_iterator)
-            phase_real_img = (phase_real_img.to(device).to(torch.float32) / 127.5 - 1).split(batch_gpu)
+            ## Custom normalization 
+            if training_set._o_dtype == 'uint8': # [0, 255] -> [-1, 1]
+                phase_real_img = (phase_real_img.to(device).to(torch.float32) / 127.5 - 1).split(batch_gpu)
+            elif training_set._o_dtype == 'int16': # [-1024, 3071] -> [-1, 1]
+                phase_real_img = (phase_real_img.to(device).to(torch.float32) / 2048 - 0.5).split(batch_gpu)
+            #elif training_set._o_dtype == 'uint16': # [0, 65535] -> [-1, 1] #TODO
+            #    phase_real_img = (phase_real_img.to(device).to(torch.float32) / 2**15 - 1).split(batch_gpu)
+
             phase_real_c = phase_real_c.to(device).split(batch_gpu)
             all_gen_z = torch.randn([len(phases) * batch_size, G.z_dim], device=device)
             all_gen_z = [phase_gen_z.split(batch_gpu) for phase_gen_z in all_gen_z.split(batch_size)]
