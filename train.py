@@ -25,8 +25,9 @@ from torch_utils import custom_ops
 
 # ---------------------------------------------------------------------------
 import sys
-from loader.dcm_datasets import _data_transforms_dicom_xray_np
-from loader.dcm_datasets import TempTransform
+sys.path.insert(0, '../loader')
+from dcm_datasets import _data_transforms_dicom
+from dcm_datasets import DICOMTransform
 
 # ----------------------------------------------------------------------------
 
@@ -56,8 +57,8 @@ def subprocess_fn(rank, c, temp_dir):
 
 ## To detour the JSON error
 def json_default(value):
-    if isinstance(value, TempTransform):
-        return "TempTransform"
+    if isinstance(value, DICOMTransform):
+        return "DICOMTransform"
     raise TypeError('not JSON serializable')
 
 
@@ -143,9 +144,10 @@ def init_dataset_kwargs(opts):
 
         if opts.modality == 'xray':
             dataset_kwargs.resolution = 1024
+            dataset_kwargs.transform = _data_transforms_dicom(dataset_kwargs.resolution, opts.o_dtype, pad=True, resize=True, norm=False)
         else: #headct, abdomenct
             dataset_kwargs.resolution = 512
-        dataset_kwargs.transform = _data_transforms_dicom_xray_np(dataset_kwargs.resolution, opts.o_dtype)
+            dataset_kwargs.transform = _data_transforms_dicom(dataset_kwargs.resolution, opts.o_dtype, pad=False, resize=True, norm=False)
 
         dataset_kwargs.output_channels = opts.o_channels
         dataset_kwargs.output_dtype = opts.o_dtype
