@@ -25,9 +25,10 @@ from torch_utils import custom_ops
 
 # ---------------------------------------------------------------------------
 import sys
-sys.path.insert(0, '../loader')
+sys.path.insert(0, './loader')
 from dcm_datasets import _data_transforms_dicom
 from dcm_datasets import DICOMTransform
+from dataset_tool import save_labels
 
 # ----------------------------------------------------------------------------
 
@@ -257,6 +258,13 @@ def main(**kwargs):
     c.D_opt_kwargs = dnnlib.EasyDict(class_name='torch.optim.Adam', betas=[0,0.99], eps=1e-8)
     c.loss_kwargs = dnnlib.EasyDict(class_name='training.loss.StyleGAN2Loss')
     c.data_loader_kwargs = dnnlib.EasyDict(pin_memory=True, prefetch_factor=2)
+
+    ## Create Label before init dataset
+    label_path = os.path.join(opts.data, 'dataset.json')
+    if opts.cond and not os.path.exists(label_path):
+        print("--cond=True but label not exists")
+        print(f"Creating labels in {label_path}")
+        save_labels(dir=opts.data, ext='.dcm')
 
     # Training set.
     c.training_set_kwargs, dataset_name = init_dataset_kwargs(opts=opts)
